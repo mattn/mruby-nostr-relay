@@ -1,0 +1,6 @@
+*.log
+.env
+my-config.rb.lock
+mruby
+k8s
+kustomize

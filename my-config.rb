@@ -16,13 +16,12 @@ MRuby::Build.new do |conf|
 
   conf.gem :github => 'mattn/mruby-json'
   conf.gem :github => 'mattn/mruby-onig-regexp'
-  conf.gem :gemdir => '/home/mattn/dev/mruby-secp256k1'
+  conf.gem :github => 'mattn/mruby-secp256k1', :branch => 'main'
   conf.gem :github => 'iij/mruby-digest'
   conf.gem :github => 'Asmod4n/mruby-phr'
   conf.gem :github => 'Asmod4n/mruby-poll'
-  conf.gem :github => 'asmod4n/mruby-wslay'
-  #conf.gem :gemdir => '/home/mattn/dev/mruby-postgresql-local'
-  conf.gem :github => '/home/mattn/dev/mruby-postgresql'
+  conf.gem :github => 'Asmod4n/mruby-wslay'
+  conf.gem :github => 'Asmod4n/mruby-postgresql'
 
   # include the GEM box
   conf.gembox 'default'
