@@ -192,7 +192,7 @@ end
 RELAY_INFO = {
   "name" => "mruby-nostr-relay",
   "description" => "A Nostr relay written in mruby",
-  "supported_nips" => [1, 9, 11],
+  "supported_nips" => [1, 9, 11, 70],
   "software" => "mruby-nostr-relay",
   "version" => "0.1.0"
 }.to_json
@@ -368,6 +368,13 @@ def process_event(ws, event)
   end
 
   kind = event["kind"]
+
+  # NIP-70: Protected Events
+  # Reject events with ["-"] tag since this relay does not support NIP-42 AUTH
+  if (event["tags"] || []).any? { |t| t[0] == "-" }
+    ws_send(ws, ["OK", id, false, "blocked: this relay does not support NIP-42 AUTH, protected events cannot be accepted"])
+    return
+  end
 
   if $db
     # Duplicate check
