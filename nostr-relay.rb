@@ -17,8 +17,9 @@ end
 
 # --- Database ---
 def db_connect
-  return unless $DATABASE_URL
-  $db = Pq.new($DATABASE_URL)
+  database_url = ENV['DATABASE_URL']
+  return unless database_url
+  $db = Pq.new(database_url)
 
   $db.exec <<~SQL
     CREATE OR REPLACE FUNCTION tags_to_tagvalues(jsonb) RETURNS text[]
