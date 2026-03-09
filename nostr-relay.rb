@@ -63,7 +63,7 @@ end
 def db_insert_event(event)
   $db.exec(
     "INSERT INTO event (id, pubkey, created_at, kind, tags, content, sig) VALUES ($1, $2, $3, $4, $5, $6, $7)",
-    event["id"], event["pubkey"], event["created_at"], event["kind"],
+    event["id"], event["pubkey"], event["created_at"].to_s, event["kind"].to_s,
     event["tags"].to_json, event["content"], event["sig"]
   )
 end
@@ -73,13 +73,13 @@ def db_delete_by_id_and_pubkey(event_id, pubkey)
 end
 
 def db_delete_replaceable(kind, pubkey)
-  $db.exec("DELETE FROM event WHERE kind = $1 AND pubkey = $2", kind, pubkey)
+  $db.exec("DELETE FROM event WHERE kind = $1 AND pubkey = $2", kind.to_s, pubkey)
 end
 
 def db_delete_parameterized_replaceable(kind, pubkey, d_val)
   $db.exec(
     "DELETE FROM event WHERE kind = $1 AND pubkey = $2 AND tags @> $3",
-    kind, pubkey, [["d", d_val]].to_json
+    kind.to_s, pubkey, [["d", d_val]].to_json
   )
 end
 
@@ -112,7 +112,7 @@ def db_query_events(filters)
     if filter["kinds"] && !filter["kinds"].empty?
       kind_placeholders = filter["kinds"].map do |k|
         pi += 1
-        params << k
+        params << k.to_s
         "$#{pi}"
       end
       parts << "kind IN (#{kind_placeholders.join(',')})"
@@ -120,13 +120,13 @@ def db_query_events(filters)
 
     if filter["since"]
       pi += 1
-      params << filter["since"]
+      params << filter["since"].to_s
       parts << "created_at >= $#{pi}"
     end
 
     if filter["until"]
       pi += 1
-      params << filter["until"]
+      params << filter["until"].to_s
       parts << "created_at <= $#{pi}"
     end
 
@@ -154,7 +154,7 @@ def db_query_events(filters)
     end
   end
   pi += 1
-  params << limit
+  params << limit.to_s
   sql << " LIMIT $#{pi}"
 
   log "SQL: #{sql} params=#{params.inspect}"
