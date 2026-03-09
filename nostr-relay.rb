@@ -163,8 +163,8 @@ def db_query_events(filters)
     events << {
       "id" => res.getvalue(row, 0),
       "pubkey" => res.getvalue(row, 1),
-      "created_at" => res.getvalue(row, 2),
-      "kind" => res.getvalue(row, 3),
+      "created_at" => res.getvalue(row, 2).to_i,
+      "kind" => res.getvalue(row, 3).to_i,
       "tags" => JSON.parse(res.getvalue(row, 4)),
       "content" => res.getvalue(row, 5),
       "sig" => res.getvalue(row, 6)
