@@ -33,14 +33,17 @@ def db_connect
     CREATE TABLE IF NOT EXISTS event (
       id text NOT NULL,
       pubkey text NOT NULL,
-      created_at integer NOT NULL,
-      kind integer NOT NULL,
+      created_at bigint NOT NULL,
+      kind bigint NOT NULL,
       tags jsonb NOT NULL,
       content text NOT NULL,
       sig text NOT NULL,
       tagvalues text[] GENERATED ALWAYS AS (tags_to_tagvalues(tags)) STORED
     );
   SQL
+
+  $db.exec "ALTER TABLE event ALTER COLUMN created_at TYPE bigint;"
+  $db.exec "ALTER TABLE event ALTER COLUMN kind TYPE bigint;"
 
   $db.exec "CREATE UNIQUE INDEX IF NOT EXISTS ididx ON event USING btree (id text_pattern_ops);"
   $db.exec "CREATE INDEX IF NOT EXISTS pubkeyprefix ON event USING btree (pubkey text_pattern_ops);"
