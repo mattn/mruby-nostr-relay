@@ -65,7 +65,7 @@ end
 def db_insert_event(event)
   $db.exec(
     "INSERT INTO event (id, pubkey, created_at, kind, tags, content, sig) VALUES ($1, $2, $3, $4, $5, $6, $7)",
-    event["id"], event["pubkey"], event["created_at"].to_s, event["kind"].to_s,
+    event["id"], event["pubkey"], event["created_at"], event["kind"],
     event["tags"].to_json, event["content"], event["sig"]
   )
 end
@@ -169,7 +169,7 @@ def db_query_events(filters)
       "pubkey" => res.getvalue(row, 1),
       "created_at" => res.getvalue(row, 2).to_i,
       "kind" => res.getvalue(row, 3).to_i,
-      "tags" => JSON.parse(res.getvalue(row, 4)),
+      "tags" => res.getvalue(row, 4),
       "content" => res.getvalue(row, 5),
       "sig" => res.getvalue(row, 6)
     }
@@ -291,11 +291,7 @@ def try_upgrade(client)
   sock = client[:socket]
 
   callbacks.recv_callback do |buf, len|
-    data = sock.recv_nonblock(len)
-    if data.nil? || data.empty?
-      raise IOError, "connection closed"
-    end
-    data
+    sock.recv_nonblock(len) || ""
   end
 
   callbacks.send_callback do |data|
@@ -445,12 +441,15 @@ def subscribe(ws, sub_id, filters)
     events = db_query_events(filters)
     log "REQ #{sub_id} found #{events.size} events"
     events.reverse.each do |event|
+      log "REQ #{sub_id} sending event #{event["id"][0..7]}..."
       ws_send(ws, ["EVENT", sub_id, event])
     end
   else
     log "REQ #{sub_id} no database connection"
   end
+  log "REQ #{sub_id} sending EOSE"
   ws_send(ws, ["EOSE", sub_id])
+  log "REQ #{sub_id} done"
 end
 
 def unsubscribe(ws, sub_id)
@@ -534,6 +533,10 @@ def run_server
                 ws.recv
               rescue Errno::EAGAIN, Errno::EWOULDBLOCK
                 # no data yet
+              rescue => e
+                log "Client disconnected: #{e.message}"
+                disconnect(poll, sock)
+                next
               end
             end
             if ws.want_write?
@@ -548,7 +551,7 @@ def run_server
             end
           end
         rescue => e
-          log "Client error: #{e.message}"
+          log "Client error: #{e.class}: #{e.message}"
           disconnect(poll, sock)
         end
       end

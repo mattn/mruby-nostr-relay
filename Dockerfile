@@ -9,7 +9,9 @@ WORKDIR /build
 COPY my-config.rb .
 COPY Makefile .
 
-RUN make
+RUN make \
+    && sed -i 's/\*paramFormat = 1;/\*paramFormat = 0;/' mruby/build/repos/host/mruby-postgresql/src/mrb_pq.c \
+    && make
 
 COPY nostr-relay.rb .
 COPY public/ public/
