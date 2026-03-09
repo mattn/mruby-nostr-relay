@@ -22,6 +22,7 @@ MRuby::Build.new do |conf|
   conf.gem :github => 'Asmod4n/mruby-poll'
   conf.gem :github => 'Asmod4n/mruby-wslay'
   conf.gem :github => 'Asmod4n/mruby-postgresql'
+  conf.gem :github => 'iij/mruby-env'
 
   # include the GEM box
   conf.gembox 'default'
