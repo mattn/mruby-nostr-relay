@@ -382,6 +382,7 @@ def process_event(ws, event)
   if $db
     begin
       # Duplicate check
+      log "DB: checking duplicate for #{id[0..7]}..."
       if db_event_exists?(id)
         ws_send(ws, ["OK", id, true, "duplicate:"])
         return
@@ -410,8 +411,10 @@ def process_event(ws, event)
 
       # Ephemeral events (kind 20000-29999) are not stored
       if kind < 20000 || kind >= 30000
+        log "DB: inserting event #{id[0..7]}..."
         db_insert_event(event)
       end
+      log "DB: success"
     rescue => e
       log "DB error: #{e.class}: #{e.message}"
       ws_send(ws, ["OK", id, false, "error: database error"])
