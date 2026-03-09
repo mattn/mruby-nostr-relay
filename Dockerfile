@@ -9,8 +9,9 @@ WORKDIR /build
 COPY my-config.rb .
 COPY Makefile .
 
+COPY fix-paramformat.patch .
 RUN make \
-    && sed -i 's/\*paramFormat = 1;/\*paramFormat = 0;/' mruby/build/repos/host/mruby-postgresql/src/mrb_pq.c \
+    && cd mruby/build/repos/host/mruby-postgresql && git apply /build/fix-paramformat.patch && cd /build \
     && make
 
 COPY nostr-relay.rb .
