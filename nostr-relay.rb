@@ -291,7 +291,11 @@ def try_upgrade(client)
   sock = client[:socket]
 
   callbacks.recv_callback do |buf, len|
-    sock.recv_nonblock(len) || ""
+    data = sock.recv_nonblock(len)
+    if data.nil? || data.empty?
+      raise IOError, "connection closed"
+    end
+    data
   end
 
   callbacks.send_callback do |data|
