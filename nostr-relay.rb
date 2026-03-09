@@ -380,36 +380,42 @@ def process_event(ws, event)
   end
 
   if $db
-    # Duplicate check
-    if db_event_exists?(id)
-      ws_send(ws, ["OK", id, true, "duplicate:"])
-      return
-    end
+    begin
+      # Duplicate check
+      if db_event_exists?(id)
+        ws_send(ws, ["OK", id, true, "duplicate:"])
+        return
+      end
 
-    # NIP-09: Deletion
-    if kind == 5
-      (event["tags"] || []).each do |tag|
-        if tag[0] == "e" && tag[1]
-          db_delete_by_id_and_pubkey(tag[1], event["pubkey"])
+      # NIP-09: Deletion
+      if kind == 5
+        (event["tags"] || []).each do |tag|
+          if tag[0] == "e" && tag[1]
+            db_delete_by_id_and_pubkey(tag[1], event["pubkey"])
+          end
         end
       end
-    end
 
-    # Replaceable events (kind 0, 3, 10000-19999)
-    if kind == 0 || kind == 3 || (kind >= 10000 && kind < 20000)
-      db_delete_replaceable(kind, event["pubkey"])
-    end
+      # Replaceable events (kind 0, 3, 10000-19999)
+      if kind == 0 || kind == 3 || (kind >= 10000 && kind < 20000)
+        db_delete_replaceable(kind, event["pubkey"])
+      end
 
-    # Parameterized replaceable events (kind 30000-39999)
-    if kind >= 30000 && kind < 40000
-      d_tag = (event["tags"] || []).find { |t| t[0] == "d" }
-      d_val = d_tag ? d_tag[1] : ""
-      db_delete_parameterized_replaceable(kind, event["pubkey"], d_val)
-    end
+      # Parameterized replaceable events (kind 30000-39999)
+      if kind >= 30000 && kind < 40000
+        d_tag = (event["tags"] || []).find { |t| t[0] == "d" }
+        d_val = d_tag ? d_tag[1] : ""
+        db_delete_parameterized_replaceable(kind, event["pubkey"], d_val)
+      end
 
-    # Ephemeral events (kind 20000-29999) are not stored
-    if kind < 20000 || kind >= 30000
-      db_insert_event(event)
+      # Ephemeral events (kind 20000-29999) are not stored
+      if kind < 20000 || kind >= 30000
+        db_insert_event(event)
+      end
+    rescue => e
+      log "DB error: #{e.class}: #{e.message}"
+      ws_send(ws, ["OK", id, false, "error: database error"])
+      return
     end
   end
 
