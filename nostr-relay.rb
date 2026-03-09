@@ -156,6 +156,7 @@ def db_query_events(filters)
   params << limit
   sql << " LIMIT $#{pi}"
 
+  log "SQL: #{sql} params=#{params.inspect}"
   res = $db.exec(sql, *params)
   events = []
   row = 0
@@ -344,6 +345,7 @@ end
 
 def process_event(ws, event)
   id = event["id"]
+  log "EVENT kind=#{event["kind"]} id=#{id[0..7]}..."
 
   # Validate event id
   serialized = [0, event["pubkey"], event["created_at"], event["kind"], event["tags"], event["content"]].to_json
@@ -423,14 +425,18 @@ def process_event(ws, event)
 end
 
 def subscribe(ws, sub_id, filters)
+  log "REQ #{sub_id} filters=#{filters.to_json}"
   $subscriptions[ws] ||= {}
   $subscriptions[ws][sub_id] = filters
 
   if $db
     events = db_query_events(filters)
+    log "REQ #{sub_id} found #{events.size} events"
     events.reverse.each do |event|
       ws_send(ws, ["EVENT", sub_id, event])
     end
+  else
+    log "REQ #{sub_id} no database connection"
   end
   ws_send(ws, ["EOSE", sub_id])
 end
