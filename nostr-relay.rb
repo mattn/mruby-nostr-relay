@@ -65,7 +65,7 @@ end
 def db_insert_event(event)
   $db.exec(
     "INSERT INTO event (id, pubkey, created_at, kind, tags, content, sig) VALUES ($1, $2, $3, $4, $5, $6, $7)",
-    event["id"], event["pubkey"], event["created_at"], event["kind"],
+    event["id"], event["pubkey"], event["created_at"].to_s, event["kind"].to_s,
     event["tags"].to_json, event["content"], event["sig"]
   )
 end
