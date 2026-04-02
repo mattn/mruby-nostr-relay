@@ -114,7 +114,7 @@ def db_query_events(filters)
     if filter["kinds"] && !filter["kinds"].empty?
       kind_placeholders = filter["kinds"].map do |k|
         pi += 1
-        params << k
+        params << k.to_s
         "$#{pi}::int4"
       end
       parts << "kind IN (#{kind_placeholders.join(',')})"
@@ -122,13 +122,13 @@ def db_query_events(filters)
 
     if filter["since"]
       pi += 1
-      params << filter["since"]
+      params << filter["since"].to_s
       parts << "created_at >= $#{pi}::int4"
     end
 
     if filter["until"]
       pi += 1
-      params << filter["until"]
+      params << filter["until"].to_s
       parts << "created_at <= $#{pi}::int4"
     end
 
@@ -156,7 +156,7 @@ def db_query_events(filters)
     end
   end
   pi += 1
-  params << limit
+  params << limit.to_s
   sql << " LIMIT $#{pi}::int4"
 
   log "SQL: #{sql} params=#{params.inspect}"
@@ -538,7 +538,7 @@ def run_server
               rescue Errno::EAGAIN, Errno::EWOULDBLOCK
                 # no data yet
               rescue => e
-                log "Client disconnected: #{e.message}"
+                log "Client error: #{e.message}" unless e.respond_to?(:errno) && e.errno == 0
                 disconnect(poll, sock)
                 next
               end
