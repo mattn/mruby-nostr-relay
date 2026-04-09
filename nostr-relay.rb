@@ -64,7 +64,7 @@ end
 
 def db_insert_event(event)
   $db.exec(
-    "INSERT INTO event (id, pubkey, created_at, kind, tags, content, sig) VALUES ($1::int4, $2, $3::int4, $4::int4, $5::jsonb, $6, $7)",
+    "INSERT INTO event (id, pubkey, created_at, kind, tags, content, sig) VALUES ($1, $2, $3::int4, $4::int4, $5::jsonb, $6, $7)",
     event["id"], event["pubkey"], event["created_at"], event["kind"].to_s,
     event["tags"].to_json, event["content"], event["sig"]
   )
@@ -532,7 +532,7 @@ def run_server
             end
           elsif client[:state] == :websocket
             ws = client[:ws]
-            if ws.want_read?
+            if ws.want_read? && ready.readable?
               begin
                 ws.recv
               rescue Errno::EAGAIN, Errno::EWOULDBLOCK
@@ -549,6 +549,12 @@ def run_server
               rescue Errno::EAGAIN, Errno::EWOULDBLOCK
                 # can't write yet
               end
+            end
+            # Update poll events: watch for write readiness when data is pending
+            if ws.want_write?
+              client[:poll_fd].events = Poll::In | Poll::Out
+            else
+              client[:poll_fd].events = Poll::In
             end
             if ws.close_received? && ws.close_sent?
               disconnect(poll, sock)
