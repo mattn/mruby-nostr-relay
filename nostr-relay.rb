@@ -57,17 +57,13 @@ rescue => e
   $db = nil
 end
 
-def db_event_exists?(id)
-  res = $db.exec("SELECT 1 FROM event WHERE id = $1", id)
-  res.ntuples > 0
-end
-
 def db_insert_event(event)
-  $db.exec(
-    "INSERT INTO event (id, pubkey, created_at, kind, tags, content, sig) VALUES ($1, $2, $3::int4, $4::int4, $5::jsonb, $6, $7)",
+  res = $db.exec(
+    "INSERT INTO event (id, pubkey, created_at, kind, tags, content, sig) VALUES ($1, $2, $3::int4, $4::int4, $5::jsonb, $6, $7) ON CONFLICT (id) DO NOTHING RETURNING id",
     event["id"], event["pubkey"], event["created_at"], event["kind"],
     event["tags"].to_json, event["content"], event["sig"]
   )
+  res.ntuples > 0
 end
 
 def db_delete_by_id_and_pubkey(event_id, pubkey)
@@ -383,13 +379,6 @@ def process_event(ws, event)
 
   if $db
     begin
-      # Duplicate check
-      log "DB: checking duplicate for #{id[0..7]}..."
-      if db_event_exists?(id)
-        ws_send(ws, ["OK", id, true, "duplicate:"])
-        return
-      end
-
       # NIP-09: Deletion
       if kind == 5
         (event["tags"] || []).each do |tag|
@@ -413,8 +402,10 @@ def process_event(ws, event)
 
       # Ephemeral events (kind 20000-29999) are not stored
       if kind < 20000 || kind >= 30000
-        log "DB: inserting event #{id[0..7]}... created_at=#{event["created_at"].class}:#{event["created_at"]} kind=#{event["kind"].class}:#{event["kind"]}"
-        db_insert_event(event)
+        unless db_insert_event(event)
+          ws_send(ws, ["OK", id, true, "duplicate:"])
+          return
+        end
       end
       log "DB: success"
     rescue => e
