@@ -15,7 +15,7 @@ MRuby::Build.new do |conf|
   end
 
   conf.gem :github => 'mattn/mruby-json'
-  conf.gem :github => 'mattn/mruby-onig-regexp'
+  conf.gem :core => 'mruby-regexp'
   conf.gem :github => 'mattn/mruby-secp256k1', :branch => 'main'
   conf.gem :github => 'iij/mruby-digest'
   conf.gem :github => 'Asmod4n/mruby-phr'
