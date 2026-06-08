@@ -251,6 +251,22 @@ def serve_static(client, path)
   :close
 end
 
+# Resolve the real client IP from proxy headers, falling back to the peer
+# address, or "-" when unknown.
+def resolve_client_ip(client, fwd)
+  ["cf-connecting-ip", "x-forwarded-for", "x-real-ip"].each do |name|
+    value = fwd[name]
+    next if value.nil? || value.empty?
+    # X-Forwarded-For may be a comma separated list; take the first entry.
+    return value.split(",").first.strip
+  end
+  begin
+    client[:socket].peeraddr[3]
+  rescue
+    "-"
+  end
+end
+
 def try_upgrade(client)
   phr = Phr.new
   offset = phr.parse_request(client[:buf])
@@ -263,11 +279,17 @@ def try_upgrade(client)
 
   ws_key = nil
   accept_header = nil
+  fwd = {}
   phr.headers.each do |name, value|
     lname = name.downcase
     ws_key = value if lname == "sec-websocket-key"
     accept_header = value if lname == "accept"
+    # Capture proxy headers to resolve the real client IP (Cloudflare Tunnel /
+    # reverse proxy) instead of the local proxy address.
+    fwd[lname] = value if lname == "cf-connecting-ip" || lname == "x-forwarded-for" || lname == "x-real-ip"
   end
+
+  client[:ip] = resolve_client_ip(client, fwd)
 
   # NIP-11: Relay Information Document
   unless ws_key
@@ -307,7 +329,7 @@ def try_upgrade(client)
   client[:ws] = Wslay::Event::Context::Server.new(callbacks)
 
   $subscriptions[client[:ws]] = {}
-  log "WebSocket connection established"
+  log "[#{client[:ip]}] WebSocket connection established"
   true
 end
 
@@ -315,9 +337,12 @@ end
 def on_ws_message(client, msg)
   return if msg.opcode == :close
 
+  log "[#{client[:ip]}] Received: #{msg.msg}"
+
   begin
     payload = JSON.parse(msg.msg)
   rescue
+    log "[#{client[:ip]}] Failed to parse JSON: #{msg.msg}"
     ws_send(client[:ws], ["NOTICE", "invalid JSON"])
     return
   end
@@ -530,7 +555,7 @@ def run_server
               rescue Errno::EAGAIN, Errno::EWOULDBLOCK
                 # no data yet
               rescue => e
-                log "Client error: #{e.message}" unless e.respond_to?(:errno) && e.errno == 0
+                log "[#{client[:ip] || "-"}] Client error: #{e.message}" unless e.respond_to?(:errno) && e.errno == 0
                 disconnect(poll, sock)
                 next
               end
@@ -564,6 +589,7 @@ end
 def disconnect(poll, sock)
   client = $clients.delete(sock)
   if client
+    log "[#{client[:ip] || "-"}] Client disconnected" if client[:ws]
     $subscriptions.delete(client[:ws]) if client[:ws]
     poll.remove(client[:poll_fd]) if client[:poll_fd]
   end
