@@ -12,6 +12,7 @@ This relay supports the following Nostr Implementation Possibilities (NIPs):
 - **NIP-12**: Generic tag queries (#e, #p, etc)
 - **NIP-16**: Event Treatment (ephemeral events 20000-29999)
 - **NIP-20**: Command results (OK messages)
+- **NIP-26**: Delegated Event Signing (`delegation` tag verification)
 - **NIP-33**: Parameterized Replaceable Events (kind 30000-39999)
 - **NIP-70**: Protected Events (reject events with `["-"]` tag)
 

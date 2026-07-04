@@ -192,7 +192,7 @@ end
 RELAY_INFO = {
   "name" => "mruby-nostr-relay",
   "description" => "A Nostr relay written in mruby",
-  "supported_nips" => [1, 2, 4, 9, 11, 12, 15, 16, 20, 28, 33, 70],
+  "supported_nips" => [1, 2, 4, 9, 11, 12, 15, 16, 20, 26, 28, 33, 70],
   "relay_countries" => (ENV['RELAY_COUNTRIES'] || "JP").split(',').map(&:strip).reject(&:empty?),
   "software" => "mruby-nostr-relay",
   "version" => "0.1.0"
@@ -368,6 +368,59 @@ def ws_send(ws, msg)
   ws.queue_msg(msg.to_json, :text_frame)
 end
 
+# --- NIP-26: Delegated Event Signing ---
+# Conditions is an &-separated query string, e.g. "kind=1&created_at>1&created_at<9999999999".
+def validate_delegation_conditions(event, conditions)
+  kind_allowed = false
+  created_at_valid = true
+
+  conditions.split("&").each do |condition|
+    if condition.start_with?("kind=")
+      value = condition["kind=".length..-1]
+      kind_allowed = true if value =~ /\A-?\d+\z/ && event["kind"] == value.to_i
+    elsif condition.start_with?("created_at<")
+      value = condition["created_at<".length..-1]
+      created_at_valid = false if value =~ /\A-?\d+\z/ && event["created_at"] >= value.to_i
+    elsif condition.start_with?("created_at>")
+      value = condition["created_at>".length..-1]
+      created_at_valid = false if value =~ /\A-?\d+\z/ && event["created_at"] <= value.to_i
+    end
+  end
+
+  kind_allowed && created_at_valid
+end
+
+# Verify the delegation token "nostr:delegation:<delegatee pubkey>:<conditions>"
+# was signed (BIP-340 Schnorr over its SHA-256 hash) by the delegator.
+def verify_delegation_signature(delegatee_pubkey, delegator_pubkey, conditions, signature)
+  return false unless signature.length == 128 && signature =~ /\A[0-9a-fA-F]+\z/
+  token = "nostr:delegation:#{delegatee_pubkey}:#{conditions}"
+  hash = Digest::SHA256.digest(token)
+  pubkey_bin = [delegator_pubkey].pack("H*")
+  sig_bin = [signature].pack("H*")
+  Secp256k1.schnorr_verify(pubkey_bin, sig_bin, hash)
+rescue
+  false
+end
+
+def validate_delegation(event)
+  delegation_tag = (event["tags"] || []).find { |t| t.length >= 4 && t[0] == "delegation" }
+  return true unless delegation_tag
+  return false unless delegation_tag.length == 4
+
+  delegator_pubkey = delegation_tag[1]
+  conditions = delegation_tag[2]
+  signature = delegation_tag[3]
+
+  return false unless delegator_pubkey.is_a?(String) && conditions.is_a?(String) && signature.is_a?(String)
+  return false if delegator_pubkey.empty? || conditions.empty? || signature.empty?
+  return false unless delegator_pubkey.length == 64 && delegator_pubkey =~ /\A[0-9a-fA-F]+\z/
+  return false unless validate_delegation_conditions(event, conditions)
+  return false unless verify_delegation_signature(event["pubkey"], delegator_pubkey, conditions, signature)
+
+  true
+end
+
 def process_event(ws, event)
   id = event["id"]
   log "EVENT kind=#{event["kind"]} id=#{id[0..7]}..."
@@ -391,6 +444,12 @@ def process_event(ws, event)
     end
   rescue => e
     ws_send(ws, ["OK", id, false, "invalid: signature verification failed: #{e.message}"])
+    return
+  end
+
+  # NIP-26: Delegated Event Signing
+  unless validate_delegation(event)
+    ws_send(ws, ["OK", id, false, "invalid: bad delegation"])
     return
   end
 
