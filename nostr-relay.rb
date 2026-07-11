@@ -424,6 +424,13 @@ def on_ws_message(client, msg)
     return
   end
 
+  # Client messages must be JSON arrays; scalars like null would raise on
+  # payload[0].
+  unless payload.is_a?(Array)
+    ws_send(client[:ws], ["NOTICE", "invalid: message must be a JSON array"])
+    return
+  end
+
   type = payload[0]
 
   case type
