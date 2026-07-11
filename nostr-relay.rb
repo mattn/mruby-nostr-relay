@@ -4,6 +4,8 @@
 
 RELAY_HOST = "0.0.0.0"
 RELAY_PORT = 8080
+MAX_HTTP_REQUEST_SIZE = 16384
+MAX_SUBSCRIPTIONS_PER_CLIENT = 32
 
 # --- Storage ---
 $subscriptions = {}  # ws_context => { sub_id => [filters...] }
@@ -653,6 +655,10 @@ def subscribe(ws, sub_id, filters)
   # querying or matching.
   filters = (filters || []).select { |f| f.is_a?(Hash) }
   $subscriptions[ws] ||= {}
+  if !$subscriptions[ws].key?(sub_id) && $subscriptions[ws].size >= MAX_SUBSCRIPTIONS_PER_CLIENT
+    ws_send(ws, ["CLOSED", sub_id, "error: too many subscriptions"])
+    return
+  end
   $subscriptions[ws][sub_id] = filters
 
   if $db
@@ -743,6 +749,11 @@ def run_server
               next
             end
             client[:buf] << data
+            if client[:buf].bytesize > MAX_HTTP_REQUEST_SIZE
+              log "[#{client[:ip] || "-"}] HTTP request too large"
+              disconnect(poll, sock)
+              next
+            end
             result = try_upgrade(client)
             if result == :error || result == :close
               disconnect(poll, sock)
