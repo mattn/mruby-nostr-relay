@@ -8,6 +8,7 @@ RELAY_PORT = 8080
 # --- Storage ---
 $subscriptions = {}  # ws_context => { sub_id => [filters...] }
 $clients = {}        # socket => client hash
+$ws_clients = {}     # ws_context => client hash
 $db = nil            # PostgreSQL connection
 
 # --- Logging ---
@@ -329,6 +330,7 @@ def try_upgrade(client)
   client[:ws] = Wslay::Event::Context::Server.new(callbacks)
 
   $subscriptions[client[:ws]] = {}
+  $ws_clients[client[:ws]] = client
   log "[#{client[:ip]}] WebSocket connection established"
   true
 end
@@ -366,6 +368,23 @@ end
 
 def ws_send(ws, msg)
   ws.queue_msg(msg.to_json, :text_frame)
+end
+
+# Flush queued frames to a client outside its own poll iteration (e.g. events
+# broadcast while handling another client's message) and keep its poll events
+# in sync so remaining data is written once the socket becomes writable.
+def flush_ws(ws)
+  client = $ws_clients[ws]
+  return unless client
+  begin
+    ws.send if ws.want_write?
+  rescue Errno::EAGAIN, Errno::EWOULDBLOCK
+    # socket busy; poll will retry when writable
+  rescue
+    # broken connection; cleaned up when poll reports it
+    return
+  end
+  client[:poll_fd].events = ws.want_write? ? (Poll::In | Poll::Out) : Poll::In
 end
 
 # --- NIP-26: Delegated Event Signing ---
@@ -504,11 +523,14 @@ def process_event(ws, event)
 
   # Deliver to all subscribers
   $subscriptions.each do |sub_ws, subs|
+    queued = false
     subs.each do |sub_id, filters|
       if match_filters?(event, filters)
         ws_send(sub_ws, ["EVENT", sub_id, event])
+        queued = true
       end
     end
+    flush_ws(sub_ws) if queued && !sub_ws.equal?(ws)
   end
 end
 
@@ -650,6 +672,7 @@ def disconnect(poll, sock)
   if client
     log "[#{client[:ip] || "-"}] Client disconnected" if client[:ws]
     $subscriptions.delete(client[:ws]) if client[:ws]
+    $ws_clients.delete(client[:ws]) if client[:ws]
     poll.remove(client[:poll_fd]) if client[:poll_fd]
   end
   sock.close rescue nil
