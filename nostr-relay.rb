@@ -106,43 +106,68 @@ def db_query_events(filters)
   filters.each do |filter|
     parts = []
 
-    if filter["ids"] && !filter["ids"].empty?
-      id_parts = filter["ids"].map do |prefix|
-        pi += 1
-        params << "#{prefix}%"
-        "id LIKE $#{pi}"
+    # Malformed filter fields (wrong types) match nothing instead of
+    # raising or producing invalid SQL.
+    if filter["ids"] && !(filter["ids"].is_a?(Array) && filter["ids"].empty?)
+      prefixes = filter["ids"].is_a?(Array) ? filter["ids"].select { |p| p.is_a?(String) } : []
+      if prefixes.empty?
+        parts << "FALSE"
+      else
+        id_parts = prefixes.map do |prefix|
+          pi += 1
+          params << "#{prefix}%"
+          "id LIKE $#{pi}"
+        end
+        parts << "(#{id_parts.join(' OR ')})"
       end
-      parts << "(#{id_parts.join(' OR ')})"
     end
 
-    if filter["authors"] && !filter["authors"].empty?
-      author_parts = filter["authors"].map do |prefix|
-        pi += 1
-        params << "#{prefix}%"
-        "pubkey LIKE $#{pi}"
+    if filter["authors"] && !(filter["authors"].is_a?(Array) && filter["authors"].empty?)
+      prefixes = filter["authors"].is_a?(Array) ? filter["authors"].select { |p| p.is_a?(String) } : []
+      if prefixes.empty?
+        parts << "FALSE"
+      else
+        author_parts = prefixes.map do |prefix|
+          pi += 1
+          params << "#{prefix}%"
+          "pubkey LIKE $#{pi}"
+        end
+        parts << "(#{author_parts.join(' OR ')})"
       end
-      parts << "(#{author_parts.join(' OR ')})"
     end
 
-    if filter["kinds"] && !filter["kinds"].empty?
-      kind_placeholders = filter["kinds"].map do |k|
-        pi += 1
-        params << k
-        "$#{pi}::int4"
+    if filter["kinds"] && !(filter["kinds"].is_a?(Array) && filter["kinds"].empty?)
+      kinds = filter["kinds"].is_a?(Array) ? filter["kinds"].select { |k| k.is_a?(Integer) } : []
+      if kinds.empty?
+        parts << "FALSE"
+      else
+        kind_placeholders = kinds.map do |k|
+          pi += 1
+          params << k
+          "$#{pi}::int4"
+        end
+        parts << "kind IN (#{kind_placeholders.join(',')})"
       end
-      parts << "kind IN (#{kind_placeholders.join(',')})"
     end
 
     if filter["since"]
-      pi += 1
-      params << filter["since"]
-      parts << "created_at >= $#{pi}::int4"
+      if filter["since"].is_a?(Integer)
+        pi += 1
+        params << filter["since"]
+        parts << "created_at >= $#{pi}::int4"
+      else
+        parts << "FALSE"
+      end
     end
 
     if filter["until"]
-      pi += 1
-      params << filter["until"]
-      parts << "created_at <= $#{pi}::int4"
+      if filter["until"].is_a?(Integer)
+        pi += 1
+        params << filter["until"]
+        parts << "created_at <= $#{pi}::int4"
+      else
+        parts << "FALSE"
+      end
     end
 
     # Tag filters (#e, #p, etc.)
@@ -174,11 +199,12 @@ def db_query_events(filters)
   # Use minimum limit from filters
   limit = 500
   filters.each do |f|
-    if f["limit"]
+    if f["limit"].is_a?(Integer)
       l = f["limit"] < 500 ? f["limit"] : 500
       limit = l if l < limit
     end
   end
+  limit = 0 if limit < 0
   pi += 1
   params << limit
   sql << " LIMIT $#{pi}::int4"
@@ -467,9 +493,32 @@ def validate_delegation(event)
   true
 end
 
+# NIP-01 requires all these fields with these exact types; anything else
+# would raise while hashing, storing, or matching the event.
+def valid_event_structure?(event)
+  event.is_a?(Hash) &&
+    event["pubkey"].is_a?(String) &&
+    event["sig"].is_a?(String) &&
+    event["kind"].is_a?(Integer) &&
+    event["created_at"].is_a?(Integer) &&
+    event["content"].is_a?(String) &&
+    event["tags"].is_a?(Array) &&
+    event["tags"].all? { |t| t.is_a?(Array) && t.all? { |v| v.is_a?(String) } }
+end
+
 def process_event(ws, event)
+  unless event.is_a?(Hash) && event["id"].is_a?(String)
+    ws_send(ws, ["NOTICE", "invalid: malformed event"])
+    return
+  end
+
   id = event["id"]
   log "EVENT kind=#{event["kind"]} id=#{id[0..7]}..."
+
+  unless valid_event_structure?(event)
+    ws_send(ws, ["OK", id, false, "invalid: malformed event"])
+    return
+  end
 
   # Validate event id
   serialized = [0, event["pubkey"], event["created_at"], event["kind"], event["tags"], event["content"]].to_json
@@ -572,6 +621,9 @@ end
 
 def subscribe(ws, sub_id, filters)
   log "REQ #{sub_id} filters=#{filters.to_json}"
+  # Ignore filters that are not JSON objects; they would raise while
+  # querying or matching.
+  filters = (filters || []).select { |f| f.is_a?(Hash) }
   $subscriptions[ws] ||= {}
   $subscriptions[ws][sub_id] = filters
 
@@ -594,13 +646,16 @@ def unsubscribe(ws, sub_id)
   $subscriptions[ws]&.delete(sub_id)
 end
 
+# Malformed filter fields (wrong types) never match instead of raising:
+# a bad filter from one client must not break processing for another.
 def match_filters?(event, filters_array)
   filters_array.any? do |filter|
-    next false if filter["ids"] && !filter["ids"].any? { |prefix| event["id"].start_with?(prefix) }
-    next false if filter["authors"] && !filter["authors"].any? { |prefix| event["pubkey"].start_with?(prefix) }
-    next false if filter["kinds"] && !filter["kinds"].include?(event["kind"])
-    next false if filter["since"] && event["created_at"] < filter["since"]
-    next false if filter["until"] && event["created_at"] > filter["until"]
+    next false unless filter.is_a?(Hash)
+    next false if filter["ids"] && !(filter["ids"].is_a?(Array) && filter["ids"].any? { |prefix| prefix.is_a?(String) && event["id"].start_with?(prefix) })
+    next false if filter["authors"] && !(filter["authors"].is_a?(Array) && filter["authors"].any? { |prefix| prefix.is_a?(String) && event["pubkey"].start_with?(prefix) })
+    next false if filter["kinds"] && !(filter["kinds"].is_a?(Array) && filter["kinds"].include?(event["kind"]))
+    next false if filter["since"] && !(filter["since"].is_a?(Integer) && event["created_at"] >= filter["since"])
+    next false if filter["until"] && !(filter["until"].is_a?(Integer) && event["created_at"] <= filter["until"])
 
     # Tag filters (#e, #p, etc.)
     tag_match = true
@@ -608,7 +663,7 @@ def match_filters?(event, filters_array)
       if key.start_with?("#") && key.length == 2
         tag_name = key[1]
         event_tag_values = (event["tags"] || []).select { |t| t[0] == tag_name }.map { |t| t[1] }
-        unless values.any? { |v| event_tag_values.include?(v) }
+        unless values.is_a?(Array) && values.any? { |v| event_tag_values.include?(v) }
           tag_match = false
           break
         end
