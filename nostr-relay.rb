@@ -294,13 +294,20 @@ def serve_static(client, path)
   path = path.gsub("..", "")  # prevent traversal
   filepath = "public#{path}"
 
-  unless File.exist?(filepath)
+  # File.read raises on directories and unreadable files; respond 404
+  # instead of dropping the connection without a response.
+  body = nil
+  begin
+    body = File.read(filepath) if File.exist?(filepath)
+  rescue
+    body = nil
+  end
+
+  unless body
     resp = http_response("404 Not Found", { "Content-Type" => "text/plain" }, "Not Found")
     client[:socket].write(resp)
     return :close
   end
-
-  body = File.read(filepath)
   ext = filepath.split(".").last
   content_type = CONTENT_TYPES[ext] || "application/octet-stream"
   resp = http_response("200 OK",
