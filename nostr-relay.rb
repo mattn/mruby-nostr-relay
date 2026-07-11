@@ -364,11 +364,19 @@ def try_upgrade(client)
   sock = client[:socket]
 
   callbacks.recv_callback do |buf, len|
-    data = sock.recv_nonblock(len)
-    if data.nil? || data.empty?
-      raise IOError, "connection closed"
+    # Serve bytes that arrived together with the handshake request before
+    # reading from the socket, or they would be lost.
+    pending = client[:buf]
+    if pending && !pending.empty?
+      client[:buf] = pending[len..-1] || ""
+      pending[0, len]
+    else
+      data = sock.recv_nonblock(len)
+      if data.nil? || data.empty?
+        raise IOError, "connection closed"
+      end
+      data
     end
-    data
   end
 
   callbacks.send_callback do |data|
@@ -718,6 +726,15 @@ def run_server
             result = try_upgrade(client)
             if result == :error || result == :close
               disconnect(poll, sock)
+            elsif result == true && !client[:buf].empty?
+              # Process WebSocket frames pipelined with the handshake now;
+              # the socket may never become readable again.
+              begin
+                client[:ws].recv
+              rescue Errno::EAGAIN, Errno::EWOULDBLOCK
+                # buffered data consumed; wait for more
+              end
+              flush_ws(client[:ws])
             end
           elsif client[:state] == :websocket
             ws = client[:ws]
