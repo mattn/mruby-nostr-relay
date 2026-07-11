@@ -456,23 +456,31 @@ end
 # --- NIP-26: Delegated Event Signing ---
 # Conditions is an &-separated query string, e.g. "kind=1&created_at>1&created_at<9999999999".
 def validate_delegation_conditions(event, conditions)
-  kind_allowed = false
-  created_at_valid = true
+  kinds = []
 
   conditions.split("&").each do |condition|
     if condition.start_with?("kind=")
       value = condition["kind=".length..-1]
-      kind_allowed = true if value =~ /\A-?\d+\z/ && event["kind"] == value.to_i
+      return false unless value =~ /\A-?\d+\z/
+      kinds << value.to_i
     elsif condition.start_with?("created_at<")
       value = condition["created_at<".length..-1]
-      created_at_valid = false if value =~ /\A-?\d+\z/ && event["created_at"] >= value.to_i
+      return false unless value =~ /\A-?\d+\z/
+      return false unless event["created_at"] < value.to_i
     elsif condition.start_with?("created_at>")
       value = condition["created_at>".length..-1]
-      created_at_valid = false if value =~ /\A-?\d+\z/ && event["created_at"] <= value.to_i
+      return false unless value =~ /\A-?\d+\z/
+      return false unless event["created_at"] > value.to_i
+    else
+      # Unknown or malformed conditions must invalidate the delegation
+      # rather than silently widen it.
+      return false
     end
   end
 
-  kind_allowed && created_at_valid
+  # Multiple kind conditions form an OR set; no kind condition means the
+  # delegation does not restrict kinds.
+  kinds.empty? || kinds.include?(event["kind"])
 end
 
 # Verify the delegation token "nostr:delegation:<delegatee pubkey>:<conditions>"
