@@ -105,6 +105,15 @@ def escape_like(str)
   str.gsub("\\") { "\\\\" }.gsub("%") { "\\%" }.gsub("_") { "\\_" }
 end
 
+# created_at and kind are stored as int4; values outside this range would
+# make the parameter cast raise instead of simply not matching.
+INT4_MIN = -2147483648
+INT4_MAX = 2147483647
+
+def int4?(v)
+  v.is_a?(Integer) && v >= INT4_MIN && v <= INT4_MAX
+end
+
 def db_query_events(filters)
   conditions = []
   params = []
@@ -144,7 +153,7 @@ def db_query_events(filters)
     end
 
     if filter["kinds"] && !(filter["kinds"].is_a?(Array) && filter["kinds"].empty?)
-      kinds = filter["kinds"].is_a?(Array) ? filter["kinds"].select { |k| k.is_a?(Integer) } : []
+      kinds = filter["kinds"].is_a?(Array) ? filter["kinds"].select { |k| int4?(k) } : []
       if kinds.empty?
         parts << "FALSE"
       else
@@ -158,20 +167,24 @@ def db_query_events(filters)
     end
 
     if filter["since"]
-      if filter["since"].is_a?(Integer)
+      if int4?(filter["since"])
         pi += 1
         params << filter["since"]
         parts << "created_at >= $#{pi}::int4"
+      elsif filter["since"].is_a?(Integer) && filter["since"] < INT4_MIN
+        # every stored created_at satisfies the bound; no condition needed
       else
         parts << "FALSE"
       end
     end
 
     if filter["until"]
-      if filter["until"].is_a?(Integer)
+      if int4?(filter["until"])
         pi += 1
         params << filter["until"]
         parts << "created_at <= $#{pi}::int4"
+      elsif filter["until"].is_a?(Integer) && filter["until"] > INT4_MAX
+        # every stored created_at satisfies the bound; no condition needed
       else
         parts << "FALSE"
       end
@@ -675,7 +688,14 @@ def subscribe(ws, sub_id, filters)
   $subscriptions[ws][sub_id] = filters
 
   if $db
-    events = db_query_events(filters)
+    begin
+      events = db_query_events(filters)
+    rescue => e
+      log "REQ #{sub_id} query error: #{e.class}: #{e.message}"
+      $subscriptions[ws].delete(sub_id)
+      ws_send(ws, ["CLOSED", sub_id, "error: could not query stored events"])
+      return
+    end
     log "REQ #{sub_id} found #{events.size} events"
     events.reverse.each do |event|
       log "REQ #{sub_id} sending event #{event["id"][0..7]}..."
