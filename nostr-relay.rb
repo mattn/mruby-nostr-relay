@@ -654,6 +654,12 @@ def subscribe(ws, sub_id, filters)
   # Ignore filters that are not JSON objects; they would raise while
   # querying or matching.
   filters = (filters || []).select { |f| f.is_a?(Hash) }
+  # A REQ needs at least one filter; without this check the stored query
+  # would dump events while live matching would never match anything.
+  if filters.empty?
+    ws_send(ws, ["CLOSED", sub_id, "error: no valid filters"])
+    return
+  end
   $subscriptions[ws] ||= {}
   if !$subscriptions[ws].key?(sub_id) && $subscriptions[ws].size >= MAX_SUBSCRIPTIONS_PER_CLIENT
     ws_send(ws, ["CLOSED", sub_id, "error: too many subscriptions"])
