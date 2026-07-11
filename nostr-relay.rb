@@ -71,8 +71,24 @@ def db_delete_by_id_and_pubkey(event_id, pubkey)
   $db.exec("DELETE FROM event WHERE id = $1 AND pubkey = $2", event_id, pubkey)
 end
 
+def db_replaceable_newer_exists?(kind, pubkey, created_at)
+  res = $db.exec(
+    "SELECT 1 FROM event WHERE kind = $1::int4 AND pubkey = $2 AND created_at >= $3::int4 LIMIT 1",
+    kind, pubkey, created_at
+  )
+  res.ntuples > 0
+end
+
 def db_delete_replaceable(kind, pubkey)
   $db.exec("DELETE FROM event WHERE kind = $1::int4 AND pubkey = $2", kind, pubkey)
+end
+
+def db_parameterized_replaceable_newer_exists?(kind, pubkey, d_val, created_at)
+  res = $db.exec(
+    "SELECT 1 FROM event WHERE kind = $1::int4 AND pubkey = $2 AND tags @> $3 AND created_at >= $4::int4 LIMIT 1",
+    kind, pubkey, [["d", d_val]].to_json, created_at
+  )
+  res.ntuples > 0
 end
 
 def db_delete_parameterized_replaceable(kind, pubkey, d_val)
@@ -492,8 +508,13 @@ def process_event(ws, event)
         end
       end
 
-      # Replaceable events (kind 0, 3, 10000-19999)
+      # Replaceable events (kind 0, 3, 10000-19999): only the latest
+      # event may replace stored ones; ignore older submissions.
       if kind == 0 || kind == 3 || (kind >= 10000 && kind < 20000)
+        if db_replaceable_newer_exists?(kind, event["pubkey"], event["created_at"])
+          ws_send(ws, ["OK", id, true, "duplicate: have a newer or equal event"])
+          return
+        end
         db_delete_replaceable(kind, event["pubkey"])
       end
 
@@ -501,6 +522,10 @@ def process_event(ws, event)
       if kind >= 30000 && kind < 40000
         d_tag = (event["tags"] || []).find { |t| t[0] == "d" }
         d_val = d_tag ? d_tag[1] : ""
+        if db_parameterized_replaceable_newer_exists?(kind, event["pubkey"], d_val, event["created_at"])
+          ws_send(ws, ["OK", id, true, "duplicate: have a newer or equal event"])
+          return
+        end
         db_delete_parameterized_replaceable(kind, event["pubkey"], d_val)
       end
 
