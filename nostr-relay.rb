@@ -98,6 +98,11 @@ def db_delete_parameterized_replaceable(kind, pubkey, d_val)
   )
 end
 
+# Escape LIKE metacharacters so filter prefixes match literally.
+def escape_like(str)
+  str.gsub("\\") { "\\\\" }.gsub("%") { "\\%" }.gsub("_") { "\\_" }
+end
+
 def db_query_events(filters)
   conditions = []
   params = []
@@ -115,7 +120,7 @@ def db_query_events(filters)
       else
         id_parts = prefixes.map do |prefix|
           pi += 1
-          params << "#{prefix}%"
+          params << "#{escape_like(prefix)}%"
           "id LIKE $#{pi}"
         end
         parts << "(#{id_parts.join(' OR ')})"
@@ -129,7 +134,7 @@ def db_query_events(filters)
       else
         author_parts = prefixes.map do |prefix|
           pi += 1
-          params << "#{prefix}%"
+          params << "#{escape_like(prefix)}%"
           "pubkey LIKE $#{pi}"
         end
         parts << "(#{author_parts.join(' OR ')})"
