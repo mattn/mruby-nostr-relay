@@ -148,8 +148,19 @@ def db_query_events(filters)
     # Tag filters (#e, #p, etc.)
     filter.each do |key, values|
       if key.start_with?("#") && key.length == 2 && values.is_a?(Array)
-        tag_vals = values.map { |v| "'#{v.gsub("'", "''")}'" }
-        parts << "tagvalues && ARRAY[#{tag_vals.join(',')}]::text[]"
+        # Only strings can match text[] tagvalues; an empty candidate list
+        # can never match anything.
+        vals = values.select { |v| v.is_a?(String) }
+        if vals.empty?
+          parts << "FALSE"
+        else
+          placeholders = vals.map do |v|
+            pi += 1
+            params << v
+            "$#{pi}"
+          end
+          parts << "tagvalues && ARRAY[#{placeholders.join(',')}]::text[]"
+        end
       end
     end
 
