@@ -385,7 +385,6 @@ def try_upgrade(client)
   client[:socket].write(resp)
   client[:buf] = client[:buf][offset..-1] || ""
   client[:state] = :websocket
-  client[:socket]._setnonblock(true)
 
   callbacks = Wslay::Event::Callbacks.new
   sock = client[:socket]
@@ -398,7 +397,9 @@ def try_upgrade(client)
       client[:buf] = pending[len..-1] || ""
       pending[0, len]
     else
-      data = sock.recv_nonblock(len)
+      # The socket stays non-blocking (recv_nonblock would revert it to
+      # blocking on return); wslay maps Errno::EAGAIN to would-block.
+      data = sock.recv(len)
       if data.nil? || data.empty?
         raise IOError, "connection closed"
       end
@@ -406,9 +407,10 @@ def try_upgrade(client)
     end
   end
 
+  # Return the number of bytes actually sent so wslay can resume partial
+  # writes; a blocking write here could stall the whole event loop.
   callbacks.send_callback do |data|
-    sock.write(data)
-    data.bytesize
+    sock.send(data, 0)
   end
 
   callbacks.on_msg_recv_callback do |msg|
@@ -759,6 +761,9 @@ def run_server
       if sock == server
         begin
           client_sock = server.accept_nonblock
+          # Keep the client socket non-blocking for its whole lifetime; a
+          # blocking read or write would stall every other connection.
+          client_sock._setnonblock(true)
           pfd = poll.add(client_sock, Poll::In)
           $clients[client_sock] = {
             socket: client_sock,
@@ -776,7 +781,11 @@ def run_server
 
         begin
           if client[:state] == :http
-            data = sock.recv_nonblock(4096)
+            begin
+              data = sock.recv(4096)
+            rescue Errno::EAGAIN, Errno::EWOULDBLOCK
+              next
+            end
             if data.nil? || data.empty?
               disconnect(poll, sock)
               next
