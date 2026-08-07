@@ -60,6 +60,28 @@ rescue => e
   $db = nil
 end
 
+# Run a block of database operations, reconnecting and retrying once when
+# the connection has gone away (dropped by the server, a network path
+# timeout, ...). Without this a single broken connection turns into a
+# permanent outage: every later query fails with "no connection to the
+# server". Genuine SQL errors are re-raised without touching the healthy
+# connection.
+def with_db_retry
+  yield
+rescue => e
+  healthy = begin
+    $db.exec("SELECT 1")
+    true
+  rescue
+    false
+  end
+  raise e if healthy
+  log "DB connection lost (#{e.class}: #{e.message}) -- reconnecting"
+  db_connect
+  raise e unless $db
+  yield
+end
+
 def db_insert_event(event)
   res = $db.exec(
     "INSERT INTO event (id, pubkey, created_at, kind, tags, content, sig) VALUES ($1, $2, $3::int4, $4::int4, $5::jsonb, $6, $7) ON CONFLICT (id) DO NOTHING RETURNING id",
@@ -427,7 +449,11 @@ end
 
 # --- Nostr Protocol ---
 def on_ws_message(client, msg)
-  return if msg.opcode == :close
+  # Only text frames carry nostr messages. Control frames (:ping, :pong,
+  # :connection_close) are answered by the websocket layer but still reach
+  # this callback; parsing a ping payload as JSON made the relay send
+  # bogus "message must be a JSON array" notices to every client.
+  return unless msg.opcode == :text_frame
 
   log "[#{client[:ip]}] Received: #{msg.msg}"
 
@@ -611,41 +637,46 @@ def process_event(ws, event)
 
   if $db
     begin
-      # NIP-09: Deletion
-      if kind == 5
-        (event["tags"] || []).each do |tag|
-          if tag[0] == "e" && tag[1]
-            db_delete_by_id_and_pubkey(tag[1], event["pubkey"])
+      # The whole sequence is retried on a lost connection; every statement
+      # in it is idempotent (deletes, newer-exists checks, insert with ON
+      # CONFLICT DO NOTHING), so a mid-way retry is safe.
+      with_db_retry do
+        # NIP-09: Deletion
+        if kind == 5
+          (event["tags"] || []).each do |tag|
+            if tag[0] == "e" && tag[1]
+              db_delete_by_id_and_pubkey(tag[1], event["pubkey"])
+            end
           end
         end
-      end
 
-      # Replaceable events (kind 0, 3, 10000-19999): only the latest
-      # event may replace stored ones; ignore older submissions.
-      if kind == 0 || kind == 3 || (kind >= 10000 && kind < 20000)
-        if db_replaceable_newer_exists?(kind, event["pubkey"], event["created_at"])
-          ws_send(ws, ["OK", id, true, "duplicate: have a newer or equal event"])
-          return
+        # Replaceable events (kind 0, 3, 10000-19999): only the latest
+        # event may replace stored ones; ignore older submissions.
+        if kind == 0 || kind == 3 || (kind >= 10000 && kind < 20000)
+          if db_replaceable_newer_exists?(kind, event["pubkey"], event["created_at"])
+            ws_send(ws, ["OK", id, true, "duplicate: have a newer or equal event"])
+            return
+          end
+          db_delete_replaceable(kind, event["pubkey"])
         end
-        db_delete_replaceable(kind, event["pubkey"])
-      end
 
-      # Parameterized replaceable events (kind 30000-39999)
-      if kind >= 30000 && kind < 40000
-        d_tag = (event["tags"] || []).find { |t| t[0] == "d" }
-        d_val = d_tag ? d_tag[1] : ""
-        if db_parameterized_replaceable_newer_exists?(kind, event["pubkey"], d_val, event["created_at"])
-          ws_send(ws, ["OK", id, true, "duplicate: have a newer or equal event"])
-          return
+        # Parameterized replaceable events (kind 30000-39999)
+        if kind >= 30000 && kind < 40000
+          d_tag = (event["tags"] || []).find { |t| t[0] == "d" }
+          d_val = d_tag ? d_tag[1] : ""
+          if db_parameterized_replaceable_newer_exists?(kind, event["pubkey"], d_val, event["created_at"])
+            ws_send(ws, ["OK", id, true, "duplicate: have a newer or equal event"])
+            return
+          end
+          db_delete_parameterized_replaceable(kind, event["pubkey"], d_val)
         end
-        db_delete_parameterized_replaceable(kind, event["pubkey"], d_val)
-      end
 
-      # Ephemeral events (kind 20000-29999) are not stored
-      if kind < 20000 || kind >= 30000
-        unless db_insert_event(event)
-          ws_send(ws, ["OK", id, true, "duplicate:"])
-          return
+        # Ephemeral events (kind 20000-29999) are not stored
+        if kind < 20000 || kind >= 30000
+          unless db_insert_event(event)
+            ws_send(ws, ["OK", id, true, "duplicate:"])
+            return
+          end
         end
       end
       log "DB: success"
@@ -691,7 +722,7 @@ def subscribe(ws, sub_id, filters)
 
   if $db
     begin
-      events = db_query_events(filters)
+      events = with_db_retry { db_query_events(filters) }
     rescue => e
       log "REQ #{sub_id} query error: #{e.class}: #{e.message}"
       $subscriptions[ws].delete(sub_id)
