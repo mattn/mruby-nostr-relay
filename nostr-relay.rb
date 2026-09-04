@@ -288,7 +288,7 @@ end
 RELAY_INFO = {
   "name" => "mruby-nostr-relay",
   "description" => "A Nostr relay written in mruby",
-  "supported_nips" => [1, 4, 9, 11, 26, 70],
+  "supported_nips" => [1, 4, 9, 11, 26, 70, 78],
   "relay_countries" => (ENV['RELAY_COUNTRIES'] || "JP").split(',').map(&:strip).reject(&:empty?),
   "software" => "mruby-nostr-relay",
   "version" => "0.1.0"
