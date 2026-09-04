@@ -136,6 +136,28 @@ def int4?(v)
   v.is_a?(Integer) && v >= INT4_MIN && v <= INT4_MAX
 end
 
+# NIP-40: return true once an event's first valid expiration timestamp has
+# passed. Malformed expiration tags are ignored.
+def event_expired?(event, now = Time.now.to_i)
+  tags = event["tags"] || []
+  if tags.is_a?(String)
+    begin
+      tags = JSON.parse(tags)
+    rescue
+      return false
+    end
+  end
+  return false unless tags.is_a?(Array)
+
+  tags.each do |tag|
+    next unless tag.is_a?(Array) && tag.length >= 2
+    next unless tag[0] == "expiration" && tag[1].is_a?(String)
+    next unless tag[1] =~ /^\d+$/
+    return tag[1].to_i <= now
+  end
+  false
+end
+
 def db_query_events(filters)
   conditions = []
   params = []
@@ -256,7 +278,7 @@ def db_query_events(filters)
   events = []
   row = 0
   while row < res.ntuples
-    events << {
+    event = {
       "id" => res.getvalue(row, 0),
       "pubkey" => res.getvalue(row, 1),
       "created_at" => res.getvalue(row, 2).to_i,
@@ -265,6 +287,7 @@ def db_query_events(filters)
       "content" => res.getvalue(row, 5),
       "sig" => res.getvalue(row, 6)
     }
+    events << event unless event_expired?(event)
     row += 1
   end
   events
@@ -288,7 +311,7 @@ end
 RELAY_INFO = {
   "name" => "mruby-nostr-relay",
   "description" => "A Nostr relay written in mruby",
-  "supported_nips" => [1, 4, 9, 11, 26, 66, 70, 78],
+  "supported_nips" => [1, 4, 9, 11, 26, 40, 66, 70, 78],
   "relay_countries" => (ENV['RELAY_COUNTRIES'] || "JP").split(',').map(&:strip).reject(&:empty?),
   "software" => "mruby-nostr-relay",
   "version" => "0.1.0"
@@ -628,6 +651,11 @@ def process_event(ws, event)
 
   kind = event["kind"]
 
+  if event_expired?(event)
+    ws_send(ws, ["OK", id, false, "invalid: event is expired"])
+    return
+  end
+
   # NIP-70: Protected Events
   # Reject events with ["-"] tag since this relay does not support NIP-42 AUTH
   if (event["tags"] || []).any? { |t| t[0] == "-" }
@@ -751,6 +779,7 @@ end
 def match_filters?(event, filters_array)
   filters_array.any? do |filter|
     next false unless filter.is_a?(Hash)
+    next false if event_expired?(event)
     next false if filter["ids"] && !(filter["ids"].is_a?(Array) && filter["ids"].any? { |prefix| prefix.is_a?(String) && event["id"].start_with?(prefix) })
     next false if filter["authors"] && !(filter["authors"].is_a?(Array) && filter["authors"].any? { |prefix| prefix.is_a?(String) && event["pubkey"].start_with?(prefix) })
     next false if filter["kinds"] && !(filter["kinds"].is_a?(Array) && filter["kinds"].include?(event["kind"]))
