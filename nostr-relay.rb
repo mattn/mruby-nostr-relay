@@ -848,7 +848,9 @@ def run_server
               rescue Errno::EAGAIN, Errno::EWOULDBLOCK
                 # no data yet
               rescue => e
-                log "[#{client[:ip] || "-"}] Client error: #{e.message}" unless e.respond_to?(:errno) && e.errno == 0
+                normal_close = e.is_a?(IOError) && e.message == "connection closed"
+                normal_close ||= e.respond_to?(:errno) && e.errno == 0
+                log "[#{client[:ip] || "-"}] Client error: #{e.message}" unless normal_close
                 disconnect(poll, sock)
                 next
               end
