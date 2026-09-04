@@ -158,7 +158,7 @@ def event_expired?(event, now = Time.now.to_i)
   false
 end
 
-def db_query_events(filters)
+def db_query_events(filters, apply_limit = true)
   conditions = []
   params = []
   pi = 0
@@ -260,18 +260,21 @@ def db_query_events(filters)
   sql << " WHERE #{conditions.join(' OR ')}" unless conditions.empty?
   sql << " ORDER BY created_at DESC"
 
-  # Use minimum limit from filters
-  limit = 500
-  filters.each do |f|
-    if f["limit"].is_a?(Integer)
-      l = f["limit"] < 500 ? f["limit"] : 500
-      limit = l if l < limit
+  if apply_limit
+    # Use minimum limit from filters for REQ replay. NIP-45 COUNT applies the
+    # filters without truncating the result set.
+    limit = 500
+    filters.each do |f|
+      if f["limit"].is_a?(Integer)
+        l = f["limit"] < 500 ? f["limit"] : 500
+        limit = l if l < limit
+      end
     end
+    limit = 0 if limit < 0
+    pi += 1
+    params << limit
+    sql << " LIMIT $#{pi}::int4"
   end
-  limit = 0 if limit < 0
-  pi += 1
-  params << limit
-  sql << " LIMIT $#{pi}::int4"
 
   log "SQL: #{sql} params=#{params.inspect}"
   res = $db.exec(sql, *params)
@@ -311,7 +314,7 @@ end
 RELAY_INFO = {
   "name" => "mruby-nostr-relay",
   "description" => "A Nostr relay written in mruby",
-  "supported_nips" => [1, 4, 9, 11, 26, 40, 66, 70, 78],
+  "supported_nips" => [1, 4, 9, 11, 26, 40, 45, 66, 70, 78],
   "relay_countries" => (ENV['RELAY_COUNTRIES'] || "JP").split(',').map(&:strip).reject(&:empty?),
   "software" => "mruby-nostr-relay",
   "version" => "0.1.0"
@@ -504,6 +507,10 @@ def on_ws_message(client, msg)
     sub_id = payload[1]
     filters = payload[2..-1]
     subscribe(client[:ws], sub_id, filters)
+  when "COUNT"
+    query_id = payload[1]
+    filters = payload[2..-1]
+    count_events(client[:ws], query_id, filters)
   when "CLOSE"
     sub_id = payload[1]
     unsubscribe(client[:ws], sub_id)
@@ -768,6 +775,29 @@ def subscribe(ws, sub_id, filters)
   log "REQ #{sub_id} sending EOSE"
   ws_send(ws, ["EOSE", sub_id])
   log "REQ #{sub_id} done"
+end
+
+def count_events(ws, query_id, filters)
+  log "COUNT #{query_id} filters=#{filters.to_json}"
+  filters = (filters || []).select { |f| f.is_a?(Hash) }
+  if filters.empty?
+    ws_send(ws, ["CLOSED", query_id, "error: no valid filters"])
+    return
+  end
+
+  unless $db
+    ws_send(ws, ["CLOSED", query_id, "error: no database connection"])
+    return
+  end
+
+  begin
+    count = with_db_retry { db_query_events(filters, false).size }
+    ws_send(ws, ["COUNT", query_id, {"count" => count}])
+    log "COUNT #{query_id} result=#{count}"
+  rescue => e
+    log "COUNT #{query_id} query error: #{e.class}: #{e.message}"
+    ws_send(ws, ["CLOSED", query_id, "error: could not count stored events"])
+  end
 end
 
 def unsubscribe(ws, sub_id)
