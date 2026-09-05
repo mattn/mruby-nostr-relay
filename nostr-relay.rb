@@ -978,14 +978,18 @@ def run_server
             result = try_upgrade(client)
             if result == :error || result == :close
               disconnect(poll, sock)
-            elsif result == true && !client[:buf].empty?
-              # Process WebSocket frames pipelined with the handshake now;
-              # the socket may never become readable again.
-              begin
-                client[:ws].recv
-              rescue Errno::EAGAIN, Errno::EWOULDBLOCK
-                # buffered data consumed; wait for more
+            elsif result == true
+              if !client[:buf].empty?
+                # Process WebSocket frames pipelined with the handshake now;
+                # the socket may never become readable again.
+                begin
+                  client[:ws].recv
+                rescue Errno::EAGAIN, Errno::EWOULDBLOCK
+                  # buffered data consumed; wait for more
+                end
               end
+              # The upgrade may queue an AUTH challenge even when no WebSocket
+              # frame was pipelined with the HTTP request.
               flush_ws(client[:ws])
             end
           elsif client[:state] == :websocket
