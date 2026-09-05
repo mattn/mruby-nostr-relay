@@ -92,7 +92,10 @@ def db_insert_event(event)
 end
 
 def db_delete_by_id_and_pubkey(event_id, pubkey)
-  $db.exec("DELETE FROM event WHERE id = $1 AND pubkey = $2", event_id, pubkey)
+  $db.exec(
+    "DELETE FROM event WHERE id = $1 AND (pubkey = $2 OR (kind = 1059 AND EXISTS (SELECT 1 FROM jsonb_array_elements(tags) tag WHERE tag->>0 = 'p' AND tag->>1 = $2)))",
+    event_id, pubkey
+  )
 end
 
 def db_replaceable_newer_exists?(kind, pubkey, created_at)
@@ -158,7 +161,7 @@ def event_expired?(event, now = Time.now.to_i)
   false
 end
 
-def db_query_events(filters, apply_limit = true)
+def db_query_events(filters, ws, apply_limit = true)
   conditions = []
   params = []
   pi = 0
@@ -256,8 +259,21 @@ def db_query_events(filters, apply_limit = true)
     conditions << "(#{parts.join(' AND ')})" unless parts.empty?
   end
 
-  sql = "SELECT id, pubkey, created_at, kind, tags, content, sig FROM event"
-  sql << " WHERE #{conditions.join(' OR ')}" unless conditions.empty?
+  authenticated = ($ws_clients[ws] || {})[:authenticated_pubkeys] || {}
+  privacy = if authenticated.empty?
+    "kind <> 1059"
+  else
+    auth_parts = authenticated.keys.map do |pubkey|
+      pi += 1
+      params << pubkey
+      "tag->>1 = $#{pi}"
+    end
+    "(kind <> 1059 OR EXISTS (SELECT 1 FROM jsonb_array_elements(tags) tag WHERE tag->>0 = 'p' AND (#{auth_parts.join(' OR ')})))"
+  end
+
+  sql = "SELECT id, pubkey, created_at, kind, tags, content, sig FROM event WHERE "
+  sql << "(#{conditions.join(' OR ')}) AND " unless conditions.empty?
+  sql << privacy
   sql << " ORDER BY created_at DESC"
 
   if apply_limit
@@ -314,7 +330,7 @@ end
 RELAY_INFO = {
   "name" => "mruby-nostr-relay",
   "description" => "A Nostr relay written in mruby",
-  "supported_nips" => [1, 4, 9, 11, 26, 40, 45, 66, 70, 78],
+  "supported_nips" => [1, 4, 9, 11, 17, 26, 40, 42, 45, 59, 66, 70, 78],
   "relay_countries" => (ENV['RELAY_COUNTRIES'] || "JP").split(',').map(&:strip).reject(&:empty?),
   "software" => "mruby-nostr-relay",
   "version" => "0.1.0"
@@ -408,11 +424,13 @@ def try_upgrade(client)
 
   ws_key = nil
   accept_header = nil
+  host_header = nil
   fwd = {}
   phr.headers.each do |name, value|
     lname = name.downcase
     ws_key = value if lname == "sec-websocket-key"
     accept_header = value if lname == "accept"
+    host_header = value if lname == "host"
     # Capture proxy headers to resolve the real client IP (Cloudflare Tunnel /
     # reverse proxy) instead of the local proxy address.
     fwd[lname] = value if lname == "cf-connecting-ip" || lname == "x-forwarded-for" || lname == "x-real-ip"
@@ -466,10 +484,14 @@ def try_upgrade(client)
   end
 
   client[:ws] = Wslay::Event::Context::Server.new(callbacks)
+  client[:challenge] = Digest::SHA256.digest("#{Time.now.to_f}:#{sock.object_id}:#{rand}").unpack1("H*")
+  client[:relay_url] = ENV['RELAY_URL'] || "wss://#{host_header}"
+  client[:authenticated_pubkeys] = {}
 
   $subscriptions[client[:ws]] = {}
   $ws_clients[client[:ws]] = client
   log "[#{client[:ip]}] WebSocket connection established"
+  ws_send(client[:ws], ["AUTH", client[:challenge]])
   true
 end
 
@@ -503,6 +525,8 @@ def on_ws_message(client, msg)
   case type
   when "EVENT"
     process_event(client[:ws], payload[1])
+  when "AUTH"
+    process_auth(client[:ws], payload[1])
   when "REQ"
     sub_id = payload[1]
     filters = payload[2..-1]
@@ -521,6 +545,70 @@ end
 
 def ws_send(ws, msg)
   ws.queue_msg(msg.to_json, :text_frame)
+end
+
+def event_tags(event)
+  tags = event["tags"] || []
+  return tags if tags.is_a?(Array)
+  JSON.parse(tags)
+rescue
+  []
+end
+
+def event_visible_to?(ws, event)
+  return true unless event["kind"] == 1059
+  authenticated = ($ws_clients[ws] || {})[:authenticated_pubkeys] || {}
+  event_tags(event).any? do |tag|
+    tag.is_a?(Array) && tag.length >= 2 && tag[0] == "p" && authenticated.key?(tag[1])
+  end
+end
+
+def normalize_relay_url(url)
+  url.to_s.downcase.sub(%r{/+$}, "")
+end
+
+def process_auth(ws, event)
+  id = event.is_a?(Hash) ? event["id"].to_s : ""
+  client = $ws_clients[ws]
+  unless client && valid_event_structure?(event)
+    ws_send(ws, ["OK", id, false, "invalid: malformed authentication event"])
+    return
+  end
+  unless event["kind"] == 22242
+    ws_send(ws, ["OK", id, false, "invalid: authentication event must be kind 22242"])
+    return
+  end
+  unless (Time.now.to_i - event["created_at"]).abs <= 600
+    ws_send(ws, ["OK", id, false, "invalid: authentication event timestamp is out of range"])
+    return
+  end
+  tags = event_tags(event)
+  unless tags.any? { |tag| tag[0] == "challenge" && tag[1] == client[:challenge] }
+    ws_send(ws, ["OK", id, false, "invalid: authentication challenge does not match"])
+    return
+  end
+  unless tags.any? { |tag| tag[0] == "relay" && normalize_relay_url(tag[1]) == normalize_relay_url(client[:relay_url]) }
+    ws_send(ws, ["OK", id, false, "invalid: authentication relay does not match"])
+    return
+  end
+  serialized = [0, event["pubkey"], event["created_at"], event["kind"], event["tags"], event["content"]].to_json
+  expected_id = Digest::SHA256.digest(serialized).unpack1("H*")
+  valid_signature = false
+  if id == expected_id
+    begin
+      valid_signature = Secp256k1.schnorr_verify(
+        [event["pubkey"]].pack("H*"), [event["sig"]].pack("H*"), [id].pack("H*")
+      )
+    rescue
+      valid_signature = false
+    end
+  end
+  unless valid_signature
+    ws_send(ws, ["OK", id, false, "invalid: authentication signature verification failed"])
+    return
+  end
+  client[:authenticated_pubkeys][event["pubkey"]] = true
+  ws_send(ws, ["OK", id, true, ""])
 end
 
 # Flush queued frames to a client outside its own poll iteration (e.g. events
@@ -664,9 +752,9 @@ def process_event(ws, event)
   end
 
   # NIP-70: Protected Events
-  # Reject events with ["-"] tag since this relay does not support NIP-42 AUTH
-  if (event["tags"] || []).any? { |t| t[0] == "-" }
-    ws_send(ws, ["OK", id, false, "blocked: this relay does not support NIP-42 AUTH, protected events cannot be accepted"])
+  authenticated = (($ws_clients[ws] || {})[:authenticated_pubkeys] || {}).key?(event["pubkey"])
+  if (event["tags"] || []).any? { |t| t[0] == "-" } && !authenticated
+    ws_send(ws, ["OK", id, false, "auth-required: protected event must be published by its authenticated author"])
     return
   end
 
@@ -726,6 +814,7 @@ def process_event(ws, event)
 
   # Deliver to all subscribers
   $subscriptions.each do |sub_ws, subs|
+    next unless event_visible_to?(sub_ws, event)
     queued = false
     subs.each do |sub_id, filters|
       if match_filters?(event, filters)
@@ -757,7 +846,7 @@ def subscribe(ws, sub_id, filters)
 
   if $db
     begin
-      events = with_db_retry { db_query_events(filters) }
+      events = with_db_retry { db_query_events(filters, ws) }
     rescue => e
       log "REQ #{sub_id} query error: #{e.class}: #{e.message}"
       $subscriptions[ws].delete(sub_id)
@@ -791,7 +880,7 @@ def count_events(ws, query_id, filters)
   end
 
   begin
-    count = with_db_retry { db_query_events(filters, false).size }
+    count = with_db_retry { db_query_events(filters, ws, false).size }
     ws_send(ws, ["COUNT", query_id, {"count" => count}])
     log "COUNT #{query_id} result=#{count}"
   rescue => e
