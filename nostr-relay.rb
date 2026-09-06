@@ -130,6 +130,14 @@ def escape_like(str)
   str.gsub("\\") { "\\\\" }.gsub("%") { "\\%" }.gsub("_") { "\\_" }
 end
 
+# NIP-50: split a search string into words. An event matches when every word
+# occurs in its content, which is also how match_filters? decides, so stored
+# and live results agree.
+def search_words(search)
+  return [] unless search.is_a?(String)
+  search.split(" ").select { |w| !w.empty? }
+end
+
 # created_at and kind are stored as int4; values outside this range would
 # make the parameter cast raise instead of simply not matching.
 INT4_MIN = -2147483648
@@ -237,6 +245,19 @@ def db_query_events(filters, ws, apply_limit = true)
       end
     end
 
+    # NIP-50: every word of the search string must occur in the content
+    if filter["search"]
+      if filter["search"].is_a?(String)
+        search_words(filter["search"]).each do |word|
+          pi += 1
+          params << "%#{escape_like(word)}%"
+          parts << "content ILIKE $#{pi}"
+        end
+      else
+        parts << "FALSE"
+      end
+    end
+
     # Tag filters (#e, #p, etc.)
     filter.each do |key, values|
       if key.start_with?("#") && key.length == 2 && values.is_a?(Array)
@@ -330,7 +351,7 @@ end
 RELAY_INFO = {
   "name" => "mruby-nostr-relay",
   "description" => "A Nostr relay written in mruby",
-  "supported_nips" => [1, 4, 9, 11, 17, 26, 40, 42, 45, 59, 66, 70, 78],
+  "supported_nips" => [1, 4, 9, 11, 17, 26, 40, 42, 45, 50, 59, 66, 70, 78],
   "relay_countries" => (ENV['RELAY_COUNTRIES'] || "JP").split(',').map(&:strip).reject(&:empty?),
   "software" => "mruby-nostr-relay",
   "version" => "0.1.0"
@@ -904,6 +925,13 @@ def match_filters?(event, filters_array)
     next false if filter["kinds"] && !(filter["kinds"].is_a?(Array) && filter["kinds"].include?(event["kind"]))
     next false if filter["since"] && !(filter["since"].is_a?(Integer) && event["created_at"] >= filter["since"])
     next false if filter["until"] && !(filter["until"].is_a?(Integer) && event["created_at"] <= filter["until"])
+
+    # NIP-50 search
+    if filter["search"]
+      next false unless filter["search"].is_a?(String)
+      content = (event["content"] || "").downcase
+      next false unless search_words(filter["search"]).all? { |word| content.include?(word.downcase) }
+    end
 
     # Tag filters (#e, #p, etc.)
     tag_match = true
