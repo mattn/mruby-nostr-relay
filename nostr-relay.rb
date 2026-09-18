@@ -12,6 +12,7 @@ $subscriptions = {}  # ws_context => { sub_id => [filters...] }
 $clients = {}        # socket => client hash
 $ws_clients = {}     # ws_context => client hash
 $db = nil            # PostgreSQL connection
+$db_retry_at = 0     # earliest Time (as Integer) for the next reconnect attempt
 
 # --- Logging ---
 def log(msg)
@@ -87,6 +88,25 @@ rescue => e
   db_connect
   raise e unless $db
   yield
+end
+
+# Seconds to wait between reconnect attempts while the database is down, so a
+# long outage does not turn every incoming message into a connect() call.
+DB_RECONNECT_INTERVAL = 5
+
+# Make sure $db is usable before a handler touches the database. When a
+# reconnect inside with_db_retry failed (PostgreSQL was still restarting),
+# db_connect left $db nil; without this the relay would never try again and
+# stay in "no database connection" until the process was restarted.
+def db_ensure
+  return true if $db
+  return false unless ENV['DATABASE_URL']
+  now = Time.now.to_i
+  return false if now < $db_retry_at
+  $db_retry_at = now + DB_RECONNECT_INTERVAL
+  log "DB: not connected -- reconnecting"
+  db_connect
+  !$db.nil?
 end
 
 def db_insert_event(event)
@@ -786,7 +806,7 @@ def process_event(ws, event)
     return
   end
 
-  if $db
+  if db_ensure
     begin
       # The whole sequence is retried on a lost connection; every statement
       # in it is idempotent (deletes, newer-exists checks, insert with ON
@@ -836,6 +856,11 @@ def process_event(ws, event)
       ws_send(ws, ["OK", id, false, "error: database error"])
       return
     end
+  elsif ENV['DATABASE_URL']
+    # A database is configured but unreachable: tell the client instead of
+    # answering OK for an event that will never be stored.
+    ws_send(ws, ["OK", id, false, "error: database unavailable"])
+    return
   end
 
   ws_send(ws, ["OK", id, true, ""])
@@ -872,7 +897,7 @@ def subscribe(ws, sub_id, filters)
   end
   $subscriptions[ws][sub_id] = filters
 
-  if $db
+  if db_ensure
     begin
       events = with_db_retry { db_query_events(filters, ws) }
     rescue => e
@@ -902,7 +927,7 @@ def count_events(ws, query_id, filters)
     return
   end
 
-  unless $db
+  unless db_ensure
     ws_send(ws, ["CLOSED", query_id, "error: no database connection"])
     return
   end
