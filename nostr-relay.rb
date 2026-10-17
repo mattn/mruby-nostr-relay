@@ -204,9 +204,9 @@ def db_query_events(filters, ws, apply_limit = true)
   filters.each do |filter|
     parts = []
 
-    # Malformed filter fields (wrong types) match nothing instead of
-    # raising or producing invalid SQL.
-    if filter["ids"] && !(filter["ids"].is_a?(Array) && filter["ids"].empty?)
+    # Malformed filter fields (wrong types) and empty lists (NIP-01) match
+    # nothing instead of raising or producing invalid SQL.
+    if filter["ids"]
       prefixes = filter["ids"].is_a?(Array) ? filter["ids"].select { |p| p.is_a?(String) } : []
       if prefixes.empty?
         parts << "FALSE"
@@ -220,7 +220,7 @@ def db_query_events(filters, ws, apply_limit = true)
       end
     end
 
-    if filter["authors"] && !(filter["authors"].is_a?(Array) && filter["authors"].empty?)
+    if filter["authors"]
       prefixes = filter["authors"].is_a?(Array) ? filter["authors"].select { |p| p.is_a?(String) } : []
       if prefixes.empty?
         parts << "FALSE"
@@ -234,7 +234,7 @@ def db_query_events(filters, ws, apply_limit = true)
       end
     end
 
-    if filter["kinds"] && !(filter["kinds"].is_a?(Array) && filter["kinds"].empty?)
+    if filter["kinds"]
       kinds = filter["kinds"].is_a?(Array) ? filter["kinds"].select { |k| int4?(k) } : []
       if kinds.empty?
         parts << "FALSE"
