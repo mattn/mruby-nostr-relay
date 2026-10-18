@@ -338,9 +338,9 @@ def db_query_events(filters, ws, apply_limit = true)
     selects = conditions.each_with_index.map do |cond, i|
       pi += 1
       params << limits[i]
-      "(SELECT #{columns} FROM event WHERE #{cond} AND #{privacy} ORDER BY created_at DESC LIMIT $#{pi}::int4)"
+      "(SELECT #{columns} FROM event WHERE #{cond} AND #{privacy} ORDER BY created_at DESC, id LIMIT $#{pi}::int4)"
     end
-    sql = "SELECT #{columns} FROM (#{selects.join(' UNION ')}) AS matched ORDER BY created_at DESC"
+    sql = "SELECT #{columns} FROM (#{selects.join(' UNION ')}) AS matched ORDER BY created_at DESC, id"
   else
     # NIP-45 COUNT applies the filters without truncating the result set.
     sql = "SELECT #{columns} FROM event WHERE (#{conditions.join(' OR ')}) AND #{privacy}"
@@ -913,7 +913,7 @@ def subscribe(ws, sub_id, filters)
       return
     end
     log "REQ #{sub_id} found #{events.size} events"
-    events.reverse.each do |event|
+    events.each do |event|
       log "REQ #{sub_id} sending event #{event["id"][0..7]}..."
       ws_send(ws, ["EVENT", sub_id, event])
     end
