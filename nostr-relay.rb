@@ -303,7 +303,12 @@ def db_query_events(filters, ws, apply_limit = true)
             params << v
             "$#{pi}"
           end
-          parts << "tagvalues && ARRAY[#{placeholders.join(',')}]::text[]"
+          values_sql = "ARRAY[#{placeholders.join(',')}]::text[]"
+          pi += 1
+          params << key[1]
+          # tagvalues has no tag names, so it only narrows the search (via the
+          # GIN index); the EXISTS makes sure the value sits in a tag of this name.
+          parts << "(tagvalues && #{values_sql} AND EXISTS (SELECT 1 FROM jsonb_array_elements(tags) t WHERE t->>0 = $#{pi} AND t->>1 = ANY(#{values_sql})))"
         end
       end
     end
