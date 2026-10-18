@@ -198,8 +198,12 @@ end
 
 def db_query_events(filters, ws, apply_limit = true)
   conditions = []
+  limits = []
   params = []
   pi = 0
+
+  # A REQ without filters behaves like a single empty filter.
+  filters = [{}] if filters.empty?
 
   filters.each do |filter|
     parts = []
@@ -304,7 +308,15 @@ def db_query_events(filters, ws, apply_limit = true)
       end
     end
 
-    conditions << "(#{parts.join(' AND ')})" unless parts.empty?
+    conditions << (parts.empty? ? "TRUE" : "(#{parts.join(' AND ')})")
+
+    # NIP-01: each filter's limit applies to its own initial query
+    limit = 500
+    if filter["limit"].is_a?(Integer)
+      limit = filter["limit"] < 500 ? filter["limit"] : 500
+    end
+    limit = 0 if limit < 0
+    limits << limit
   end
 
   authenticated = ($ws_clients[ws] || {})[:authenticated_pubkeys] || {}
@@ -319,25 +331,19 @@ def db_query_events(filters, ws, apply_limit = true)
     "(kind <> 1059 OR EXISTS (SELECT 1 FROM jsonb_array_elements(tags) tag WHERE tag->>0 = 'p' AND (#{auth_parts.join(' OR ')})))"
   end
 
-  sql = "SELECT id, pubkey, created_at, kind, tags, content, sig FROM event WHERE "
-  sql << "(#{conditions.join(' OR ')}) AND " unless conditions.empty?
-  sql << privacy
-  sql << " ORDER BY created_at DESC"
-
+  columns = "id, pubkey, created_at, kind, tags, content, sig"
   if apply_limit
-    # Use minimum limit from filters for REQ replay. NIP-45 COUNT applies the
-    # filters without truncating the result set.
-    limit = 500
-    filters.each do |f|
-      if f["limit"].is_a?(Integer)
-        l = f["limit"] < 500 ? f["limit"] : 500
-        limit = l if l < limit
-      end
+    # REQ replay: one subquery per filter with its own limit; UNION drops
+    # events matched by more than one filter.
+    selects = conditions.each_with_index.map do |cond, i|
+      pi += 1
+      params << limits[i]
+      "(SELECT #{columns} FROM event WHERE #{cond} AND #{privacy} ORDER BY created_at DESC LIMIT $#{pi}::int4)"
     end
-    limit = 0 if limit < 0
-    pi += 1
-    params << limit
-    sql << " LIMIT $#{pi}::int4"
+    sql = "SELECT #{columns} FROM (#{selects.join(' UNION ')}) AS matched ORDER BY created_at DESC"
+  else
+    # NIP-45 COUNT applies the filters without truncating the result set.
+    sql = "SELECT #{columns} FROM event WHERE (#{conditions.join(' OR ')}) AND #{privacy}"
   end
 
   log "SQL: #{sql} params=#{params.inspect}"
