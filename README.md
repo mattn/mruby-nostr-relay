@@ -10,6 +10,7 @@ This relay supports the following Nostr Implementation Possibilities (NIPs):
 - **NIP-09**: Event deletion (kind 5)
 - **NIP-11**: Relay Information Document
 - **NIP-12**: Generic tag queries (#e, #p, etc)
+- **NIP-13**: Proof of Work (minimum difficulty via `MIN_POW_DIFFICULTY`)
 - **NIP-16**: Event Treatment (ephemeral events 20000-29999)
 - **NIP-20**: Command results (OK messages)
 - **NIP-26**: Delegated Event Signing (`delegation` tag verification)
@@ -24,6 +25,10 @@ make run
 ```
 
 The relay will start on `ws://localhost:8080` by default.
+
+Set `MIN_POW_DIFFICULTY` to require a minimum NIP-13 proof of work difficulty
+(leading zero bits of the event id) for published events. The default is `0`
+(disabled).
 
 ## Installation
 
