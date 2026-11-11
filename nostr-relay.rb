@@ -6,6 +6,7 @@ RELAY_HOST = "0.0.0.0"
 RELAY_PORT = 8080
 MAX_HTTP_REQUEST_SIZE = 16384
 MAX_SUBSCRIPTIONS_PER_CLIENT = 32
+MIN_POW_DIFFICULTY = (ENV['MIN_POW_DIFFICULTY'] || "0").to_i  # NIP-13
 
 # --- Storage ---
 $subscriptions = {}  # ws_context => { sub_id => [filters...] }
@@ -194,6 +195,28 @@ def event_expired?(event, now = Time.now.to_i)
     return tag[1].to_i <= now
   end
   false
+end
+
+# NIP-13: count the number of leading zero bits in a hex-encoded event id.
+def count_leading_zero_bits(hex)
+  count = 0
+  hex.each_char do |c|
+    nibble = "0123456789abcdef".index(c.downcase)
+    break if nibble.nil?
+    if nibble == 0
+      count += 4
+      next
+    end
+    if nibble <= 1
+      count += 3
+    elsif nibble <= 3
+      count += 2
+    elsif nibble <= 7
+      count += 1
+    end
+    break
+  end
+  count
 end
 
 def db_query_events(filters, ws, apply_limit = true)
@@ -389,10 +412,11 @@ end
 RELAY_INFO = {
   "name" => "mruby-nostr-relay",
   "description" => "A Nostr relay written in mruby",
-  "supported_nips" => [1, 4, 9, 11, 17, 26, 40, 42, 45, 50, 59, 66, 70, 78],
+  "supported_nips" => [1, 4, 9, 11, 13, 17, 26, 40, 42, 45, 50, 59, 66, 70, 78],
   "relay_countries" => (ENV['RELAY_COUNTRIES'] || "JP").split(',').map(&:strip).reject(&:empty?),
   "software" => "mruby-nostr-relay",
-  "version" => "0.1.0"
+  "version" => "0.1.0",
+  "limitation" => { "min_pow_difficulty" => MIN_POW_DIFFICULTY }
 }.to_json
 
 CONTENT_TYPES = {
@@ -808,6 +832,15 @@ def process_event(ws, event)
   if event_expired?(event)
     ws_send(ws, ["OK", id, false, "invalid: event is expired"])
     return
+  end
+
+  # NIP-13: enforce proof of work when a minimum difficulty is required.
+  if MIN_POW_DIFFICULTY > 0
+    pow = count_leading_zero_bits(id)
+    if pow < MIN_POW_DIFFICULTY
+      ws_send(ws, ["OK", id, false, "pow: difficulty #{pow} is less than #{MIN_POW_DIFFICULTY}"])
+      return
+    end
   end
 
   # NIP-70: Protected Events
