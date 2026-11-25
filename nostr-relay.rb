@@ -830,7 +830,7 @@ def process_event(ws, event)
   kind = event["kind"]
 
   if event_expired?(event)
-    ws_send(ws, ["OK", id, false, "invalid: event is expired"])
+    ws_send(ws, ["OK", id, false, "invalid: event has expired"])
     return
   end
 
